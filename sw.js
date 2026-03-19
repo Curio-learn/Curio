@@ -1,4 +1,4 @@
-const CACHE = 'curio-v29';
+const CACHE = 'curio-v30';
 
 const PRECACHE = [
   './',
