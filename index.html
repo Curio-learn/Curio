@@ -144,6 +144,63 @@
     color: var(--ink);
   }
 
+  .search-pill { gap: 6px; }
+  .search-pill.active { background: var(--accent2) !important; color: #fff !important; border-color: var(--accent2) !important; }
+
+  .search-result-card {
+    background: var(--cream);
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.15s;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .search-result-card:hover {
+    border-color: var(--accent2);
+    transform: translateY(-1px);
+  }
+  .search-result-thumb {
+    width: 100%;
+    height: 100px;
+    object-fit: cover;
+    border-radius: 6px;
+    background: var(--border);
+  }
+  .search-result-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--ink);
+    line-height: 1.3;
+  }
+  .search-result-desc {
+    font-size: 0.78rem;
+    color: var(--muted);
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .search-topic-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-family: 'DM Mono', monospace;
+    color: var(--accent2);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .search-loading {
+    text-align: center;
+    padding: 24px;
+    color: var(--muted);
+    font-family: 'DM Mono', monospace;
+    font-size: 0.85rem;
+  }
+
   .domain-pill.active {
     background: var(--ink);
     color: var(--paper);
@@ -1757,6 +1814,7 @@
 
 <div class="domain-bar" id="domainBar">
   <button class="domain-pill active" onclick="setDomain('random')" data-domain="random">✦ All topics</button>
+  <button class="domain-pill search-pill" id="searchPill" onclick="toggleSearchMode()" data-domain="search">🔍 Search</button>
   <button class="domain-pill" onclick="setDomain('finance')" data-domain="finance">Finance</button>
   <button class="domain-pill" onclick="setDomain('economics')" data-domain="economics">Economics</button>
   <button class="domain-pill" onclick="setDomain('statistics')" data-domain="statistics">Statistics</button>
@@ -1784,6 +1842,27 @@
   <button class="domain-pill domain-pill-game" onclick="startFlagGame()" data-domain="flags">🚩 Flag Quiz</button>
   <button class="domain-pill domain-pill-game" onclick="startFlagGame('hard')" data-domain="flags-hard">💀 Flag Quiz: Hard</button>
   <button class="domain-pill domain-pill-game" onclick="startCountryGame()" data-domain="countries">🌍 Country Quiz</button>
+</div>
+
+<!-- Search bar (shown when search mode active) -->
+<div id="searchBar" style="display:none; padding:10px 16px 6px; background:var(--paper); border-bottom:1px solid var(--border);">
+  <div style="display:flex; gap:8px; max-width:600px; margin:0 auto;">
+    <input id="searchInput" type="text" placeholder="Search any topic… e.g. Spain, Black holes, WW2"
+      style="flex:1; padding:9px 14px; border:1.5px solid var(--border); border-radius:20px;
+             background:var(--cream); font-family:'DM Sans',sans-serif; font-size:0.9rem;
+             color:var(--ink); outline:none;"
+      oninput="onSearchInput(this.value)"
+      onkeydown="if(event.key==='Enter')runSearch(this.value)">
+    <button onclick="runSearch(document.getElementById('searchInput').value)"
+      style="padding:9px 18px; background:var(--accent); color:#fff; border:none; border-radius:20px;
+             font-family:'DM Sans',sans-serif; font-size:0.9rem; cursor:pointer;">Go</button>
+  </div>
+</div>
+
+<!-- Search results grid (shown before user picks an article) -->
+<div id="searchResults" style="display:none; padding:12px 16px; background:var(--paper);
+  border-bottom:1px solid var(--border); max-height:55vh; overflow-y:auto;">
+  <div id="searchResultsInner" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; max-width:900px; margin:0 auto;"></div>
 </div>
 
 <div class="progress-track">
@@ -2166,6 +2245,7 @@ function scrubFlagName(text, name) {
 // ─── Navigation ───────────────────────────────────────────────────────────────
 async function nextCard() {
   stopSpeech();
+  if (searchMode) { loadSearchCard(); return; }
   const existing = document.getElementById('mainCard');
   if (existing) existing.classList.add('leaving');
 
@@ -2188,6 +2268,7 @@ async function nextCard() {
 
 function setDomain(domain) {
   stopSpeech();
+  if (searchMode) exitSearchMode();
   appMode = 'learn';
   updateToggleBar();
   state.domain = domain;
@@ -2923,6 +3004,7 @@ function switchToLearn() {
 }
 
 function switchToPlay() {
+  if (searchMode) exitSearchMode();
   appMode = 'play';
   updateToggleBar();
   stopSpeech();
@@ -4425,6 +4507,189 @@ function renderLogoRound() {
 
 
 
+
+
+// ─── Search Mode ──────────────────────────────────────────────────────────────
+
+let searchMode = false;
+let searchTopic = '';        // current locked topic e.g. "Spain"
+let searchPool = [];         // fetched article summaries for this topic
+let searchPoolIndex = 0;     // which article in pool we're on
+let searchDebounce = null;
+
+function toggleSearchMode() {
+  if (searchMode) {
+    exitSearchMode();
+  } else {
+    enterSearchMode();
+  }
+}
+
+function enterSearchMode() {
+  searchMode = true;
+  searchTopic = '';
+  searchPool = [];
+  searchPoolIndex = 0;
+
+  // UI: activate search pill, show search bar, hide card area
+  document.querySelectorAll('.domain-pill').forEach(p => p.classList.remove('active'));
+  document.getElementById('searchPill').classList.add('active');
+  document.getElementById('searchBar').style.display = 'block';
+  document.getElementById('searchResults').style.display = 'none';
+  document.getElementById('cardArea').innerHTML = `
+    <div style="text-align:center; padding:60px 20px; color:var(--muted); font-family:'DM Mono',monospace; font-size:0.9rem;">
+      Search a topic above to begin
+    </div>`;
+
+  // Focus the input
+  setTimeout(() => {
+    const inp = document.getElementById('searchInput');
+    if (inp) { inp.value = ''; inp.focus(); }
+  }, 100);
+}
+
+function exitSearchMode() {
+  searchMode = false;
+  searchTopic = '';
+  searchPool = [];
+  document.getElementById('searchBar').style.display = 'none';
+  document.getElementById('searchResults').style.display = 'none';
+  document.getElementById('searchPill').classList.remove('active');
+  // restore previously active domain pill
+  document.querySelectorAll('.domain-pill').forEach(p => {
+    p.classList.toggle('active', p.dataset.domain === state.domain);
+  });
+  loadCard();
+}
+
+function onSearchInput(val) {
+  clearTimeout(searchDebounce);
+  if (!val.trim()) {
+    document.getElementById('searchResults').style.display = 'none';
+    return;
+  }
+  searchDebounce = setTimeout(() => runSearch(val), 500);
+}
+
+async function runSearch(query) {
+  query = (query || '').trim();
+  if (!query) return;
+
+  const resultsEl = document.getElementById('searchResults');
+  const innerEl = document.getElementById('searchResultsInner');
+  resultsEl.style.display = 'block';
+  innerEl.innerHTML = '<div class="search-loading">Searching Wikipedia…</div>';
+
+  try {
+    // Step 1: get list of matching article titles
+    const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=16&srprop=snippet`;
+    const r = await fetch(searchUrl);
+    const d = await r.json();
+    const hits = d.query?.search || [];
+
+    if (!hits.length) {
+      innerEl.innerHTML = '<div class="search-loading">No results found. Try a different topic.</div>';
+      return;
+    }
+
+    // Step 2: fetch summaries (with thumbnails) for top 10
+    const titles = hits.slice(0, 10).map(h => h.title);
+    const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(titles[0])}`;
+
+    // Fetch all summaries in parallel
+    const summaries = await Promise.all(
+      titles.map(t =>
+        fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(t)}`)
+          .then(r => r.ok ? r.json() : null)
+          .catch(() => null)
+      )
+    );
+
+    const valid = summaries.filter(s => s && s.extract && s.extract.length > 80);
+
+    if (!valid.length) {
+      innerEl.innerHTML = '<div class="search-loading">No readable articles found. Try another topic.</div>';
+      return;
+    }
+
+    // Store as pool for swipe-through after selection
+    searchPool = valid;
+    searchPoolIndex = 0;
+    searchTopic = query;
+
+    // Step 3: render result grid
+    innerEl.innerHTML = valid.map((s, i) => `
+      <div class="search-result-card" onclick="pickSearchResult(${i})">
+        ${s.thumbnail ? `<img class="search-result-thumb" src="${s.thumbnail.source}" onerror="this.style.display='none'">` : ''}
+        <div class="search-result-title">${escHtml(s.title)}</div>
+        <div class="search-result-desc">${escHtml((s.extract || '').slice(0, 120))}…</div>
+      </div>
+    `).join('');
+
+  } catch(e) {
+    innerEl.innerHTML = '<div class="search-loading">Search failed. Check your connection.</div>';
+  }
+}
+
+function pickSearchResult(index) {
+  // Hide the results grid, load that article as first card
+  document.getElementById('searchResults').style.display = 'none';
+  searchPoolIndex = index;
+  loadSearchCard();
+}
+
+async function loadSearchCard() {
+  if (!searchPool.length) { loadCard(); return; }
+
+  // Show skeleton while we prep
+  showSkeleton();
+
+  // Get current article from pool
+  const article = searchPool[searchPoolIndex];
+
+  // Mark as seen
+  state.seenTitles.add(article.title);
+
+  // Process and render it
+  const card = processArticle(article, searchTopic);
+  state.currentCard = card;
+  state.seen.push(card);
+  if (state.seen.length > 60) state.seen.shift();
+  state.cardCount++;
+  renderCard(card);
+
+  // Advance pool index — wrap around, skip seen
+  let next = (searchPoolIndex + 1) % searchPool.length;
+  // if we've seen all pool articles, silently fetch more
+  const allSeen = searchPool.every(a => state.seenTitles.has(a.title));
+  if (allSeen) {
+    fetchMoreSearchResults(searchTopic);
+  }
+  searchPoolIndex = next;
+}
+
+async function fetchMoreSearchResults(query) {
+  // Fetch a fresh batch with an offset to get different results
+  try {
+    const offset = searchPool.length;
+    const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=10&sroffset=${offset}&srprop=snippet`;
+    const r = await fetch(url);
+    const d = await r.json();
+    const hits = (d.query?.search || []).map(h => h.title);
+    const summaries = await Promise.all(
+      hits.map(t =>
+        fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(t)}`)
+          .then(r => r.ok ? r.json() : null).catch(() => null)
+      )
+    );
+    const fresh = summaries.filter(s => s && s.extract && s.extract.length > 80 && !state.seenTitles.has(s.title));
+    if (fresh.length) {
+      searchPool.push(...fresh);
+      // reset seen flags for this pool so we can keep swiping
+      searchPool.forEach(a => state.seenTitles.delete(a.title));
+    }
+  } catch(e) {}
+}
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 // Restore domain pill
