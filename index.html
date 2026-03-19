@@ -1852,7 +1852,7 @@
              background:var(--cream); font-family:'DM Sans',sans-serif; font-size:0.9rem;
              color:var(--ink); outline:none;"
       oninput="onSearchInput(this.value)"
-      onkeydown="if(event.key==='Enter')runSearch(this.value)">
+      onkeydown="if(event.key==='Enter'){runSearch(this.value);}else if(event.code==='Space'){event.stopPropagation();}">
     <button onclick="runSearch(document.getElementById('searchInput').value)"
       style="padding:9px 18px; background:var(--accent); color:#fff; border:none; border-radius:20px;
              font-family:'DM Sans',sans-serif; font-size:0.9rem; cursor:pointer;">Go</button>
@@ -4512,17 +4512,15 @@ function renderLogoRound() {
 // ─── Search Mode ──────────────────────────────────────────────────────────────
 
 let searchMode = false;
-let searchTopic = '';        // current locked topic e.g. "Spain"
-let searchPool = [];         // fetched article summaries for this topic
-let searchPoolIndex = 0;     // which article in pool we're on
+let searchTopic = '';
+let searchPool = [];          // full pool of fetched articles for swiping
+let searchPoolIndex = 0;
+let searchFetching = false;   // prevent concurrent fetches
+let searchOffset = 0;         // Wikipedia search offset for next batch
 let searchDebounce = null;
 
 function toggleSearchMode() {
-  if (searchMode) {
-    exitSearchMode();
-  } else {
-    enterSearchMode();
-  }
+  searchMode ? exitSearchMode() : enterSearchMode();
 }
 
 function enterSearchMode() {
@@ -4530,18 +4528,18 @@ function enterSearchMode() {
   searchTopic = '';
   searchPool = [];
   searchPoolIndex = 0;
+  searchOffset = 0;
 
-  // UI: activate search pill, show search bar, hide card area
   document.querySelectorAll('.domain-pill').forEach(p => p.classList.remove('active'));
   document.getElementById('searchPill').classList.add('active');
   document.getElementById('searchBar').style.display = 'block';
   document.getElementById('searchResults').style.display = 'none';
   document.getElementById('cardArea').innerHTML = `
-    <div style="text-align:center; padding:60px 20px; color:var(--muted); font-family:'DM Mono',monospace; font-size:0.9rem;">
+    <div style="text-align:center; padding:60px 20px; color:var(--muted);
+      font-family:'DM Mono',monospace; font-size:0.9rem;">
       Search a topic above to begin
     </div>`;
 
-  // Focus the input
   setTimeout(() => {
     const inp = document.getElementById('searchInput');
     if (inp) { inp.value = ''; inp.focus(); }
@@ -4555,7 +4553,6 @@ function exitSearchMode() {
   document.getElementById('searchBar').style.display = 'none';
   document.getElementById('searchResults').style.display = 'none';
   document.getElementById('searchPill').classList.remove('active');
-  // restore previously active domain pill
   document.querySelectorAll('.domain-pill').forEach(p => {
     p.classList.toggle('active', p.dataset.domain === state.domain);
   });
@@ -4576,15 +4573,15 @@ async function runSearch(query) {
   if (!query) return;
 
   const resultsEl = document.getElementById('searchResults');
-  const innerEl = document.getElementById('searchResultsInner');
+  const innerEl   = document.getElementById('searchResultsInner');
   resultsEl.style.display = 'block';
   innerEl.innerHTML = '<div class="search-loading">Searching Wikipedia…</div>';
 
   try {
-    // Step 1: get list of matching article titles
-    const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=16&srprop=snippet`;
-    const r = await fetch(searchUrl);
-    const d = await r.json();
+    // Fetch top 10 results for the preview grid
+    const url = `https://en.wikipedia.org/w/api.php?action=query&list=search` +
+      `&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=10&srprop=snippet`;
+    const d = await (await fetch(url)).json();
     const hits = d.query?.search || [];
 
     if (!hits.length) {
@@ -4592,34 +4589,27 @@ async function runSearch(query) {
       return;
     }
 
-    // Step 2: fetch summaries (with thumbnails) for top 10
-    const titles = hits.slice(0, 10).map(h => h.title);
-    const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(titles[0])}`;
-
-    // Fetch all summaries in parallel
+    // Fetch summaries (with thumbnails) in parallel for grid display
     const summaries = await Promise.all(
-      titles.map(t =>
-        fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(t)}`)
-          .then(r => r.ok ? r.json() : null)
-          .catch(() => null)
+      hits.map(h =>
+        fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(h.title)}`)
+          .then(r => r.ok ? r.json() : null).catch(() => null)
       )
     );
-
     const valid = summaries.filter(s => s && s.extract && s.extract.length > 80);
 
     if (!valid.length) {
-      innerEl.innerHTML = '<div class="search-loading">No readable articles found. Try another topic.</div>';
+      innerEl.innerHTML = '<div class="search-loading">No readable articles found.</div>';
       return;
     }
 
-    // Store as pool for swipe-through after selection
-    searchPool = valid;
-    searchPoolIndex = 0;
+    // Store topic — pool will be built when user picks
     searchTopic = query;
+    searchOffset = 0;
 
-    // Step 3: render result grid
+    // Render grid — clicking any card enters swipe mode starting from that article
     innerEl.innerHTML = valid.map((s, i) => `
-      <div class="search-result-card" onclick="pickSearchResult(${i})">
+      <div class="search-result-card" onclick="pickSearchResult('${escAttr(s.title)}')">
         ${s.thumbnail ? `<img class="search-result-thumb" src="${s.thumbnail.source}" onerror="this.style.display='none'">` : ''}
         <div class="search-result-title">${escHtml(s.title)}</div>
         <div class="search-result-desc">${escHtml((s.extract || '').slice(0, 120))}…</div>
@@ -4631,65 +4621,117 @@ async function runSearch(query) {
   }
 }
 
-function pickSearchResult(index) {
-  // Hide the results grid, load that article as first card
+async function pickSearchResult(title) {
+  // Hide grid and enter swipe mode
   document.getElementById('searchResults').style.display = 'none';
-  searchPoolIndex = index;
-  loadSearchCard();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+
+  // Show the picked article immediately as first card
+  renderSkeleton();
+  try {
+    const data = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`)
+      .then(r => r.json());
+    state.seenTitles.add(data.title);
+    const card = processArticle(data, searchTopic);
+    state.seen.push(card);
+    if (state.seen.length > 60) state.seen.shift();
+    state.cardCount++;
+    renderCard(card);
+  } catch(e) { /* fall through to pool */ }
+
+  // Build a large background pool from the topic — user can swipe indefinitely
+  buildSearchPool(searchTopic);
+}
+
+async function buildSearchPool(query) {
+  if (searchFetching) return;
+  searchFetching = true;
+  searchPool = [];
+  searchOffset = 0;
+
+  // Fetch multiple batches in background so pool is deep
+  await fetchSearchBatch(query, 0, 20);
+  await fetchSearchBatch(query, 20, 20);
+  searchFetching = false;
+}
+
+async function fetchSearchBatch(query, offset, limit) {
+  try {
+    const url = `https://en.wikipedia.org/w/api.php?action=query&list=search` +
+      `&srsearch=${encodeURIComponent(query)}&format=json&origin=*` +
+      `&srlimit=${limit}&sroffset=${offset}&srprop=snippet`;
+    const d = await (await fetch(url)).json();
+    const hits = d.query?.search || [];
+    const summaries = await Promise.all(
+      hits.map(h =>
+        fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(h.title)}`)
+          .then(r => r.ok ? r.json() : null).catch(() => null)
+      )
+    );
+    const fresh = summaries.filter(s =>
+      s && s.extract && s.extract.length > 80 && !state.seenTitles.has(s.title)
+    );
+    searchPool.push(...fresh);
+    searchOffset = offset + limit;
+  } catch(e) {}
 }
 
 async function loadSearchCard() {
-  if (!searchPool.length) { loadCard(); return; }
+  if (!searchMode) { loadCard(); return; }
 
-  // Show skeleton while we prep
-  showSkeleton();
+  renderSkeleton();
 
-  // Get current article from pool
-  const article = searchPool[searchPoolIndex];
+  // If pool is empty or nearly empty, wait briefly for it to fill, or fetch more
+  if (searchPool.length === 0) {
+    if (!searchFetching) buildSearchPool(searchTopic);
+    // Wait up to 3s for pool to populate
+    for (let i = 0; i < 30 && searchPool.length === 0; i++) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
 
-  // Mark as seen
+  // If still empty, fetch a fresh random related card via search
+  if (searchPool.length === 0) {
+    try {
+      const url = `https://en.wikipedia.org/w/api.php?action=query&list=search` +
+        `&srsearch=${encodeURIComponent(searchTopic)}&format=json&origin=*&srlimit=5&srprop=snippet`;
+      const d = await (await fetch(url)).json();
+      const hit = (d.query?.search || []).find(h => !state.seenTitles.has(h.title));
+      if (hit) {
+        const data = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(hit.title)}`)
+          .then(r => r.json());
+        const card = processArticle(data, searchTopic);
+        state.seenTitles.add(data.title);
+        state.seen.push(card);
+        if (state.seen.length > 60) state.seen.shift();
+        state.cardCount++;
+        renderCard(card);
+        return;
+      }
+    } catch(e) {}
+    // Truly nothing left — reset seen and refetch
+    state.seenTitles.clear();
+    buildSearchPool(searchTopic);
+    loadSearchCard();
+    return;
+  }
+
+  // Serve next article from pool
+  const article = searchPool.shift();
   state.seenTitles.add(article.title);
-
-  // Process and render it
   const card = processArticle(article, searchTopic);
-  state.currentCard = card;
   state.seen.push(card);
   if (state.seen.length > 60) state.seen.shift();
   state.cardCount++;
   renderCard(card);
 
-  // Advance pool index — wrap around, skip seen
-  let next = (searchPoolIndex + 1) % searchPool.length;
-  // if we've seen all pool articles, silently fetch more
-  const allSeen = searchPool.every(a => state.seenTitles.has(a.title));
-  if (allSeen) {
-    fetchMoreSearchResults(searchTopic);
+  // Replenish pool in background when it gets low
+  if (searchPool.length < 5 && !searchFetching) {
+    searchFetching = true;
+    fetchSearchBatch(searchTopic, searchOffset, 15).then(() => { searchFetching = false; });
   }
-  searchPoolIndex = next;
 }
 
-async function fetchMoreSearchResults(query) {
-  // Fetch a fresh batch with an offset to get different results
-  try {
-    const offset = searchPool.length;
-    const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=10&sroffset=${offset}&srprop=snippet`;
-    const r = await fetch(url);
-    const d = await r.json();
-    const hits = (d.query?.search || []).map(h => h.title);
-    const summaries = await Promise.all(
-      hits.map(t =>
-        fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(t)}`)
-          .then(r => r.ok ? r.json() : null).catch(() => null)
-      )
-    );
-    const fresh = summaries.filter(s => s && s.extract && s.extract.length > 80 && !state.seenTitles.has(s.title));
-    if (fresh.length) {
-      searchPool.push(...fresh);
-      // reset seen flags for this pool so we can keep swiping
-      searchPool.forEach(a => state.seenTitles.delete(a.title));
-    }
-  } catch(e) {}
-}
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 // Restore domain pill
@@ -4706,6 +4748,8 @@ document.getElementById('statsStrip').style.display = 'none';
 document.addEventListener('keydown', e => {
   if (e.code === 'Space' || e.code === 'ArrowRight') {
     if (appMode !== 'learn') return;
+    const active = document.activeElement;
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
     if (!document.querySelector('.quiz-overlay[style*="flex"]')) {
       e.preventDefault();
       nextCard();
