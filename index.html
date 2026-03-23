@@ -201,6 +201,59 @@
     font-size: 0.85rem;
   }
 
+  /* Example section */
+  .example-section {
+    margin: 0 16px 12px;
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+  }
+  .example-btn {
+    background: none;
+    border: 1.5px solid var(--accent2);
+    color: var(--accent2);
+    padding: 7px 16px;
+    border-radius: 20px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    width: 100%;
+  }
+  .example-btn:hover:not(:disabled) {
+    background: var(--accent2);
+    color: #fff;
+  }
+  .example-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .example-content {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .example-analogy, .example-scenario {
+    background: var(--cream);
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+  .example-label {
+    display: block;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent2);
+    margin-bottom: 4px;
+  }
+  .example-analogy p, .example-scenario p {
+    margin: 0;
+    font-size: 0.9rem;
+    line-height: 1.55;
+    color: var(--ink);
+  }
+
   .domain-pill.active {
     background: var(--ink);
     color: var(--paper);
@@ -225,12 +278,16 @@
   main {
     max-width: 720px;
     margin: 0 auto;
-    padding: 40px 24px calc(80px + var(--safe-bottom));
+    padding: 16px 16px calc(80px + var(--safe-bottom));
+    box-sizing: border-box;
+    width: 100%;
   }
 
   /* Card */
   .card-container {
     perspective: 1200px;
+    width: 100%;
+    box-sizing: border-box;
   }
 
   .card {
@@ -1718,6 +1775,36 @@
     letter-spacing: 0.05em;
   }
 
+
+  @media (max-width: 480px) {
+    main {
+      padding: 12px 12px calc(60px + var(--safe-bottom));
+    }
+    .card-title {
+      font-size: 1.5rem;
+    }
+    .nav-controls {
+      gap: 8px;
+    }
+    .btn-save, .btn-speak, .btn-share {
+      padding: 12px;
+      min-width: 44px;
+    }
+    .btn-next {
+      padding: 12px 16px;
+      font-size: 0.9rem;
+    }
+    .site-header {
+      padding: 0 12px;
+    }
+    .toggle-bar {
+      gap: 4px;
+    }
+    .toggle-btn {
+      padding: 6px 10px;
+      font-size: 0.8rem;
+    }
+  }
 </style>
 </head>
 <body>
@@ -2109,6 +2196,31 @@ function renderSkeleton() {
     </div>`;
 }
 
+// ─── Concept Detection ────────────────────────────────────────────────────────
+
+function isConcept(card) {
+  const title = (card.title || '').toLowerCase();
+  const text  = (card.summary || '').toLowerCase();
+  const combined = title + ' ' + text;
+
+  // Strong NON-concept signals — person, place, event
+  if (/\b(born|died|was born|birth|death|politician|president|prime minister|ceo|founder|actor|musician|footballer|athlete)\b/.test(text)) return false;
+  if (/\b(city|town|village|municipality|prefecture|province|county|population of|located in|situated in)\b/.test(text)) return false;
+  if (/\b(war|battle|treaty|invasion|revolution|uprising|assassination|election of \d{4}|signed in \d{4})\b/.test(text)) return false;
+  if (/\b(film|movie|novel|album|song|television series|tv series|directed by|written by|published in)\b/.test(text)) return false;
+
+  // Strong concept signals
+  if (/\b(refers to|is a theory|is a principle|is the process|is a concept|is a phenomenon|is a method|is a model|is a framework|is a term|is a type of|is defined as|describes the|in (mathematics|physics|economics|psychology|philosophy|biology|chemistry|logic))\b/.test(text)) return true;
+
+  // Domain-based — these domains are almost always concepts
+  const conceptDomains = ['finance','economics','statistics','accounting','mathematics',
+    'philosophy','ethics','logic & rhetoric','cognitive science','linguistics',
+    'psychology','science','biology','medicine','technology','astronomy','sociology'];
+  if (conceptDomains.includes(card.domain)) return true;
+
+  return false;
+}
+
 function renderCard(card) {
   state.currentCard = card;
   state.expanded = false;
@@ -2119,6 +2231,7 @@ function renderCard(card) {
     ? card.summary.slice(0, 480) + '…'
     : card.summary;
   const canExpand = card.summary.length > 480;
+  const showExample = isConcept(card);
 
   const imageHtml = card.image
     ? `<img class="card-image" src="${card.image}" alt="${escHtml(card.title)}" onerror="this.style.display='none'">`
@@ -2140,6 +2253,7 @@ function renderCard(card) {
           ${canExpand ? `<button class="read-more-btn" onclick="toggleExpand()">Read more</button>` : '<span></span>'}
           <a class="wiki-link" href="${card.url}" target="_blank" rel="noopener">Wikipedia ↗</a>
         </div>
+        ${showExample ? `<div class="example-section" id="exampleSection"><button class="example-btn" id="exampleBtn" onclick="loadExample()">💡 See an example</button><div class="example-content" id="exampleContent" style="display:none"></div></div>` : ''}
       </div>
     </div>
 
@@ -2391,6 +2505,7 @@ function openSavedCard(title) {
           ${canExpand ? `<button class="read-more-btn" onclick="toggleExpand()">Read more</button>` : '<span></span>'}
           <a class="wiki-link" href="${card.url}" target="_blank" rel="noopener">Wikipedia ↗</a>
         </div>
+        ${showExample ? `<div class="example-section" id="exampleSection"><button class="example-btn" id="exampleBtn" onclick="loadExample()">💡 See an example</button><div class="example-content" id="exampleContent" style="display:none"></div></div>` : ''}
       </div>
     </div>
     <div class="nav-controls">
@@ -2846,6 +2961,7 @@ function openHistoryCard(title) {
           ${canExpand ? `<button class="read-more-btn" onclick="toggleExpand()">Read more</button>` : '<span></span>'}
           <a class="wiki-link" href="${card.url}" target="_blank" rel="noopener">Wikipedia ↗</a>
         </div>
+        ${showExample ? `<div class="example-section" id="exampleSection"><button class="example-btn" id="exampleBtn" onclick="loadExample()">💡 See an example</button><div class="example-content" id="exampleContent" style="display:none"></div></div>` : ''}
       </div>
     </div>
     <div class="nav-controls">
@@ -4732,6 +4848,78 @@ async function loadSearchCard() {
   }
 }
 
+
+
+// ─── Example Generator ────────────────────────────────────────────────────────
+
+async function loadExample() {
+  const card = state.currentCard;
+  if (!card) return;
+
+  const btn = document.getElementById('exampleBtn');
+  const contentEl = document.getElementById('exampleContent');
+  if (!btn || !contentEl) return;
+
+  // Loading state
+  btn.disabled = true;
+  btn.textContent = '⏳ Generating…';
+  contentEl.style.display = 'none';
+
+  try {
+    const prompt = `The concept is: "${card.title}"
+
+Wikipedia summary: "${card.summary.slice(0, 400)}"
+
+Give exactly two things, formatted precisely like this with no extra text:
+
+ANALOGY: [A single sentence starting with "It's like..." that uses a familiar everyday comparison]
+EXAMPLE: [A single sentence starting with "For instance..." that gives a concrete real-world scenario]
+
+Be sharp and specific. Do not use generic language.`;
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+
+    const data = await response.json();
+    const text = data.content?.[0]?.text || '';
+
+    // Parse the two parts
+    const analogyMatch = text.match(/ANALOGY:\s*(.+)/);
+    const exampleMatch = text.match(/EXAMPLE:\s*(.+)/);
+
+    if (analogyMatch && exampleMatch) {
+      contentEl.innerHTML = `
+        <div class="example-analogy">
+          <span class="example-label">Analogy</span>
+          <p>${escHtml(analogyMatch[1].trim())}</p>
+        </div>
+        <div class="example-scenario">
+          <span class="example-label">Real world</span>
+          <p>${escHtml(exampleMatch[1].trim())}</p>
+        </div>`;
+    } else if (text.trim()) {
+      // Fallback: show raw text if parsing fails
+      contentEl.innerHTML = `<p style="color:var(--ink);font-size:0.9rem;line-height:1.6">${escHtml(text.trim())}</p>`;
+    } else {
+      throw new Error('Empty response');
+    }
+
+    contentEl.style.display = 'block';
+    btn.style.display = 'none';
+
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = '💡 See an example';
+    showToast('Could not generate example — try again');
+  }
+}
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 // Restore domain pill
